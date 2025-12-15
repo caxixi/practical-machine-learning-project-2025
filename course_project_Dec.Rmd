@@ -1,0 +1,332 @@
+---
+title: "Practical Machine Learning - final project"
+author: "Gal Levin"
+date: "2025-11-09"
+output:
+  html_document:
+    code_folding: show
+    toc: yes
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# <span style="color:blue">Introduction</span>
+
+This document contains the final project for the Practical Machine Learning course, offered by Johns Hopkins University via Coursera. 
+
+We are instructed to use the Weight Lifting Exercises Dataset and build a machine learning model that classifies each record into one of 5 categories. The dataset contains recordings from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants, and each category represents a different way, correct or incorrect, of doing an exercise.
+
+We are to cite the data with the following link:  http://groupware.les.inf.puc-rio.br/har. As of the writing of this document, however, the link is not active.  Instead, one may find the data on the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/273/weight+lifting+exercises+monitored+with+inertial+measurement+units).
+
+
+# <span style="color:blue">Building and checking the model</span>
+
+Calling the libraries that will be used:
+
+```{r, message=FALSE, warning=FALSE}
+library(caret)
+library(randomForest)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+
+## <span style="color:red"> Preparing the data </span>
+
+Reading the data from the working directory:
+
+```{r}
+model_creation <- read.csv("pml_training.csv")
+```
+
+First, there is a need to remove columns of documenting information. They may be correlated with other variables that contain actual measurements, and appear very useful for modeling. A model that uses them, however, would not generalize well to different data collections.
+
+Which of the variables contains documenting information? Not having access to the data collection methods, I am not entirely sure. I removed two, “X” (row number) and “user name”, based on my own judgment. Other variables were excluded based on information I found online.
+
+```{r, echo=TRUE}
+model_creation<-model_creation%>%
+  select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                     cvtd_timestamp, new_window, num_window))
+```
+
+The next problem to solve is that some variables are read as character columns. Character variables cannot be used to compute a random forest. We need to examine those columns and decide whether to transform them into factorial or numeric columns. The code below extracts the names of those variables:
+
+```{r, echo=TRUE}
+char_col <- c()  # initializing an empty vector that would accumulate the names of the character columns.
+
+# extracting the names of the character columns:
+for (i in seq_along(colnames(model_creation))) {
+  if (class(model_creation[[i]]) == "character") {
+    char_col <- c(char_col, colnames(model_creation)[i])
+  }
+}
+
+char_col
+```
+
+The first word of the variable names indicates they contain numeric content. The one exception is “classe”, the column to predict.
+
+The script below converts the character columns to numeric, except for the variable "classe", which it converts to a factor column.
+
+```{r, echo=TRUE, warning=FALSE}
+for (i in colnames(model_creation)) {
+  if (i == "classe") {
+    model_creation[[i]] <- as.factor(model_creation[[i]])
+  } else {
+    model_creation[[i]] <- as.numeric(model_creation[[i]])
+  }
+}
+```
+
+The next thing to address is that many columns contain missing values. The Random Forrest command cannot compute with missing values; we need to examine those columns and decide how to address the issue. 
+ 
+The code below calculates the fraction of missing values for each column:
+
+``` {r, echo=TRUE}
+missing_ratio <- colSums(is.na(model_creation)) / nrow(model_creation)
+```
+
+Here is a quick and ugly plot for general impression:
+
+```{r, echo=TRUE, , fig.height = 4.5, fig.width = 5.5, fig.align="center"}
+plot(missing_ratio)
+```
+
+Clearly, there are two types of columns in this dataset: those with many missing data values and those without many missing data values. Inspecting the unique values of missing data fractions is further informative:
+
+```{r, echo=TRUE}
+unique(missing_ratio)
+```
+
+Columns without many missing data values, we see, actually contain no missing values at all. Columns with many missing values have all or almost all of the data missing. 
+
+Which of the variables contains many missing data values? The code below extracts their names. 
+
+```{r, echo=TRUE}
+high_missing <- names(missing_ratio[missing_ratio > 0.95])
+sort(high_missing)
+```
+
+The names of the columns indicate that they contain summarizing information.
+
+This summary information may or may not be helpful to the classification. To check, one would need to impute the missing values. Before going through the trouble, let’s see how good a model we can get with the summary columns excluded.
+
+The code below removes the columns with many missing values from the data frame:
+
+```{r, echo=TRUE}
+comp_model_creation <- model_creation [, !(colnames(model_creation) %in% high_missing)]
+```
+
+How many variables are left?
+
+```{r, echo=TRUE}
+ncol(comp_model_creation)
+```
+
+All fifty-three variables could technically be used to create a model; the code would compute. However, it would be nice if fewer variables were enough to build a good-performing model. The computation would be faster, and if the model is satisfactory, data collection for using it would be easier.
+
+There are several ways to reduce dimensionality. Here, I opt to compute a preliminary, simpler model and assess whether the relative variable importance can guide variable selection.
+
+The code below breaks the data frame into two: training and testing parts:
+
+```{r, echo=TRUE}
+set.seed(123)
+inTrain = createDataPartition(comp_model_creation $classe, p = 3/4)[[1]]
+train <- comp_model_creation [inTrain,]
+test <- comp_model_creation [-inTrain,]
+```
+
+The following code computes a preliminary Random Forest model (only 100 trees, no cross-validation, and no tuning of mtry) of the training data. It also computes and presents the relative variable importance.
+
+```{r, echo=TRUE, fig.dim = c(10, 7), fig.align="center"}
+rf_model <- randomForest(classe ~ ., data = train, ntree = 100, importance = TRUE)
+varImpPlot(rf_model)
+```
+
+Neither of the two measures of importance separates the variable cleanly into high-impact and low-impact groups. However, neither of them is linear; both show a bend. For variables with importance below the bending, adding each variable improves the model a (relatively) little. Adding variables with an importance larger than the bending, however, improves the model to a more notable extent.   
+
+Is this unclear separation useful at all for variable selection? It would be interesting to find out. 
+
+I opted to base the variable selection on the mean decrease in accuracy, since, unlike the reduction in Gini, it calculates the improvement in predictions of data not used to build the tree. The bending point was taken by eye to be 17.
+
+The following code creates a vector of variables to include in the final model, and checks how many are there: 
+
+```{r, echo=TRUE}
+importance_vars <- importance(rf_model) # all the column names
+high_imp <- rownames(importance_vars)[importance_vars[, "MeanDecreaseAccuracy"] > 17]
+
+length(high_imp)
+```
+
+Only nine variables satisfy the (admittedly arbitrary)  cutoff criterion. The following code extracts them and the column to be predicted, "classe", into a new data frame.
+
+```{r, echo=TRUE}
+high_imp<-c(high_imp, "classe") # adding the column to predict
+train_trim <- train[, (names(train) %in% high_imp)] # create the new data frame
+```
+
+How good is a model computed with those variables only?
+
+
+## <span style="color:red"> Running and checking the final model </span>
+
+Running the final model:
+
+```{r, echo=TRUE}
+rf_model <- train(
+  classe ~ ., 
+  data = train_trim,
+  method = "rf",  
+  trControl = trainControl(
+    method = "cv",
+    number = 5                # 5-fold cross validation - let's try that
+  ))
+  
+rf_model$finalModel
+```
+
+This is actually not a bad model - more than 98% of the records are classified correctly. Therefore, for every 200 records, we expect, on average, only about three incorrect classifications. Note that if setting a different seed, one might get a slightly better (or slightly worse) accuracy rate.
+
+We can also extract the sensitivity and the specificity from the confusion matrix above:
+
+```{r, eval=TRUE}
+# extracting confusion matrix from the final random Forest model:
+cm_train <- rf_model$finalModel$confusion
+
+# removing the "class.error" column:
+cm_train <- cm_train[, 1:5]
+
+# creating a vector that will later become the class row:
+n_classes <- c("Class: A","Class: B", "Class: c", "Class: D", "Class: E")
+
+# creating empty vectors to store the sensitivity and specificity values, calculated below:
+sensitivity <- c()
+specificity <- c()
+
+# calculating the sensitivity and specificity for each class and adding them to the respective vector:
+
+for (i in 1:length(n_classes)) {
+  
+  # true positives for class i:
+  TP <- cm_train[i, i]
+  
+  # false negatives for class i:
+  FN <- sum(cm_train[i, -i])
+
+  # true negatives for class i:
+  TN <- sum(cm_train[-i, -i])
+  
+  # false positives for class i:
+  FP <- sum(cm_train[-i, i])
+
+  sensitivity<- c(sensitivity, TP / (TP + FN))
+  specificity <- c(specificity,  TN / (TN + FP))
+}
+
+# assemble the results into a data frame:
+sens_spec_df <- data.frame(
+  Class = n_classes,
+  Sensitivity = sensitivity,
+  Specificity = specificity
+)
+
+sens_spec_df
+```
+
+The model predicts with high sensitivity and specificity. The sensitivity exceeds 97% across all categories: if a record belongs to a specific category, the model correctly identifies it in more than 97% of the time. The specificity is also high; if a record does *not* belong to a particular category, the model accurately predicts that in over 99% of cases.
+
+Of course, these measures describe how well the model predicts the very data it was trained on. A better quality indicator would be how well it predicts the fraction of the data set aside for testing. The code below tests just that:    
+
+```{r, echo=TRUE}
+predictions <- predict(rf_model, newdata = test)
+cm <- confusionMatrix(test$classe, predictions)
+
+cm$overall["Accuracy"]
+cm_test <-cm$byClass[, c("Sensitivity", "Specificity")]
+cm_test
+```
+
+The performance indices indicate that in this case, the model performs about equally well on the test and training data.  
+
+
+# <span style="color:blue"> Predicting the classification of records in a new dataset </span>
+
+We are asked to use our model to predict the categories of records in a separate dataset.
+
+## <span style="color:red">Preparing the new dataset </span>
+
+Reading the data from the working directory:
+
+```{r, echo=TRUE}
+model_app <- read.csv("pml_testing.csv")
+```
+
+Are any of the variables that the model uses read as character columns (a problem encountered with the model-building data)?
+
+```{r, echo=TRUE}
+char_col <- c()   # initialize an empty vector that would accumulate the names of the character columns (if there are any)
+
+# extracting the names of the character variables (if there are any):
+for (i in seq_along(colnames(high_imp))) {
+  if (class(model_app[[i]]) == "character") {
+    char_col <- c(char_col, colnames(model_app)[i])
+  }
+}
+char_col
+```
+
+None of the variables used by the model is read as numeric. 
+
+Do the columns used by the model contain missing values?
+
+```{r, echo=TRUE}
+na_col <- c()   # initialize an empty vector that would accumulate the names of the columns with missing data (if any exist)
+
+# extracting the names of the columns that contain missing values (if there are any:
+for (i in seq_along(colnames(high_imp))) {
+  if (sum(is.na(model_app[[i]])) > 0) {
+    na_col <- c(char_col, colnames(model_app)[i])
+  }
+}
+
+na_col
+```
+
+The columns used by the model do not contain missing values.
+
+The model should be able to predict the new records. 
+
+
+## <span style="color:red">Prediction </span>
+
+Here are the predictions;
+
+```{r, echo=TRUE}
+prediction <- predict(rf_model, model_app)
+
+results <- data.frame(problem_id = model_app$problem_id,
+                      prediction = prediction)
+
+kable(results, align = "cc") %>%
+  kable_styling(full_width = FALSE,
+                position = "center") %>%
+  column_spec(1, width = "3cm") %>%     
+  column_spec(2, width = "3cm")
+
+```
+
+
+# <span style="color:blue">Discussion </span>
+
+A major challenge in this exercise was determining which of the many variables to include in the model. There are several ways to reduce dimensionality. Highly correlated columns can be combined, variables with little variability can be excluded, and principal components can replace the original variables. I was surprised to find out that a simple approach can also go a long way. Here, I based the selection on two simple criteria: first, start with columns that require minimal processing (In this case, exclude those with missing values), and second, use only the most important ones. Neither of these criteria was clearly justified, but the resulting model, using only nine variables, achieved over 98% accuracy and similar sensitivity and specificity. In fact, including only the six most important variables did not affect the model’s performance by much. Whether to use more variables and approach perfection is a question of trade-offs: how good the model needs to be vs. how difficult it is, practically and computation-wise, to add more variables. 
+
+Of course, for different datasets, with more variables substantially affecting classification, more complex dimensionality reduction may be required.
+
+The model could be improved a tad by computing more trees and adding more folds. Again, one would need to consider whether the gain in performance is worth the extra computation.
+
+The model predicted the training and testing data with comparable accuracy. There is no obvious overfitting. However, this does not guarantee that the model would predict unrelated records, say, from other people using different devices, with comparable success. Thus, it may not work as well for the extra 20 records we were to predict. Not knowing their true classification, I don't know how well the model performed.    
