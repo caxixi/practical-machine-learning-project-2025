@@ -6,4 +6,4 @@ The assignment uses the *Weight Lifting Exercises* dataset to build a machine le
 
 We are instructed to cite the dataset source as: <http://groupware.les.inf.puc-rio.br/har>. As of the writing of this document, however, this link is no longer active, but the data can be downloaded from the [UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/273/weight+lifting+exercises+monitored+with+inertial+measurement+units).
 
-**Here is a link to a live HTML report:**
+**Here is a link to a live HTML report:** [https://caxixi.github.io/practical-machine-learning-project-2025/]
